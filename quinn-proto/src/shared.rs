@@ -85,7 +85,8 @@ impl ConnectionId {
         if len > MAX_CID_SIZE || buf.remaining() < len {
             return None;
         }
-        let cid = ConnectionId::new(&buf.bytes()[..len]);
+
+        let cid = ConnectionId::new(&buf.copy_to_bytes(len));
         buf.advance(len);
         Some(cid)
     }

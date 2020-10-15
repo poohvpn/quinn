@@ -7,7 +7,7 @@ use std::{
 
 use futures::ready;
 
-use tokio::io::PollEvented;
+use tokio::io::unix::AsyncFd;
 
 use proto::{EcnCodepoint, Transmit};
 
@@ -19,14 +19,14 @@ use crate::platform::UdpExt;
 /// platforms.
 #[derive(Debug)]
 pub struct UdpSocket {
-    io: PollEvented<mio::net::UdpSocket>,
+    io: AsyncFd<mio::net::UdpSocket>,
 }
 
 impl UdpSocket {
     pub fn from_std(socket: std::net::UdpSocket) -> io::Result<UdpSocket> {
-        let io = mio::net::UdpSocket::from_socket(socket)?;
+        let io = mio::net::UdpSocket::from_std(socket);
         io.init_ext()?;
-        let io = PollEvented::new(io)?;
+        let io = AsyncFd::new(io)?;
         Ok(UdpSocket { io })
     }
 
@@ -35,11 +35,11 @@ impl UdpSocket {
         cx: &mut Context,
         transmits: &[Transmit],
     ) -> Poll<Result<usize, io::Error>> {
-        ready!(self.io.poll_write_ready(cx))?;
+        let mut guard = ready!(self.io.poll_write_ready(cx))?;
         match self.io.get_ref().send_ext(transmits) {
             Ok(n) => Poll::Ready(Ok(n)),
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.io.clear_write_ready(cx)?;
+                guard.clear_ready();
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -53,11 +53,11 @@ impl UdpSocket {
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
         debug_assert!(!bufs.is_empty());
-        ready!(self.io.poll_read_ready(cx, mio::Ready::readable()))?;
+        let mut guard = ready!(self.io.poll_read_ready(cx))?;
         match self.io.get_ref().recv_ext(bufs, meta) {
             Ok(n) => Poll::Ready(Ok(n)),
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.io.clear_read_ready(cx, mio::Ready::readable())?;
+                guard.clear_ready();
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),

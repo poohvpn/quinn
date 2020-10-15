@@ -1,7 +1,6 @@
 use std::{
     future::Future,
     io,
-    mem::MaybeUninit,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -14,6 +13,7 @@ use futures::{
 };
 use proto::{ConnectionError, FinishError, StreamId};
 use thiserror::Error;
+use tokio::io::ReadBuf;
 
 use crate::{connection::ConnectionRef, VarInt};
 
@@ -350,7 +350,7 @@ where
     fn poll_read(
         &mut self,
         cx: &mut Context,
-        buf: &mut [u8],
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<Option<usize>, ReadError>> {
         self.any_data_read = true;
         use proto::ReadError::*;
@@ -358,7 +358,7 @@ where
         if self.is_0rtt {
             conn.check_0rtt().map_err(|()| ReadError::ZeroRttRejected)?;
         }
-        match conn.inner.read(self.stream, buf) {
+        match conn.inner.read(self.stream, buf.initialize_unfilled()) {
             Ok(Some(n)) => {
                 // Flow control credit may have been issued
                 conn.wake();
@@ -552,7 +552,11 @@ where
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
         Poll::Ready(Ok(
-            match ready!(RecvStream::poll_read(self.get_mut(), cx, buf))? {
+            match ready!(RecvStream::poll_read(
+                self.get_mut(),
+                cx,
+                &mut ReadBuf::new(buf)
+            ))? {
                 Some(n) => n,
                 None => 0,
             },
@@ -564,16 +568,13 @@ impl<S> tokio::io::AsyncRead for RecvStream<S>
 where
     S: proto::crypto::Session,
 {
-    unsafe fn prepare_uninitialized_buffer(&self, _: &mut [MaybeUninit<u8>]) -> bool {
-        false
-    }
-
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        AsyncRead::poll_read(self, cx, buf)
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let _ = ready!(RecvStream::poll_read(self.get_mut(), cx, buf))?;
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -708,7 +709,7 @@ where
     type Output = Result<Option<usize>, ReadError>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
-        this.stream.poll_read(cx, this.buf)
+        this.stream.poll_read(cx, &mut ReadBuf::new(this.buf))
     }
 }
 
@@ -734,7 +735,7 @@ where
         while this.buf.len() != this.off {
             let n: usize = ready!(this
                 .stream
-                .poll_read(cx, &mut this.buf[this.off..])
+                .poll_read(cx, &mut ReadBuf::new(&mut this.buf[this.off..]))
                 .map_err(ReadExactError::ReadError)?)
             .ok_or(ReadExactError::FinishedEarly)?;
             this.off += n;
