@@ -128,7 +128,7 @@ fn read_after_close() {
             .unwrap()
             .await
             .expect("connect");
-        tokio::time::sleep_until(Instant::now() + Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         let stream = new_conn
             .uni_streams
             .next()
